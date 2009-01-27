@@ -1,0 +1,177 @@
+#!/usr/bin/perl
+
+#
+# lkc - Kernel Module Enabler from lsmod command
+# license GPLv2
+
+use Getopt::Long;
+use Cwd;
+use strict;
+
+$Getopt::Long::autoabbrev = 0;
+
+our $configfile = "";
+our $kernelpath = "";
+our $lsmodfile = "";
+our $outputfile = "";
+our $dmod = 0;
+our $dohelp = 0;
+our $doversion = 0;
+
+sub show_version
+{
+	print "lkc - Script to Kernel Module Enabler from lsmod command output\n\n";
+	print "Copyright (C) 2008,2009 Nobuhiro Iwamatsu <iwamatsu\@nigauri.org>\n";
+}
+
+sub show_help 
+{
+	show_version();
+	print <<EOF
+Usage: lkc [options]
+	-c, --configfile <file>   Kernel config file name
+	-k, --kernel              Kernel source path
+	-o, --output <file>       outout file
+	-l, --lsmod               lsmod command output file
+	-d, --disable             disable other modules
+	-h, --help                display this help screen and exit
+	-v, --version             show the version and exit
+
+By Nobuhiro Iwamatsu <iwmatsu\@nigauri.org>
+EOF
+}
+
+sub parse_args
+{
+	if (GetOptions('configfile|c=s' => \$configfile,
+		'kernel|k=s' => \$kernelpath,
+		'lsmod|l=s' => \$lsmodfile,
+		'output|o=s' => \$outputfile,
+		'disable|d' => \$dmod,
+		'help|h' => \$dohelp,
+		'version|v' => \$doversion,
+		) == 0) {
+		show_help();
+		exit;
+	}
+
+	# Check for extra options, should be none!
+	if ($#ARGV != -1) {
+		print "Extra parameters on command line\n";
+		show_help();
+		exit;
+	}
+
+	if ($doversion) {
+		show_version();
+		exit;
+	}
+
+	if ($dohelp) {
+		show_help();
+		exit;
+	}
+
+	if ( $kernelpath eq "" ) {
+		show_help();
+		exit;
+	}
+	if ( $outputfile eq "" ) {
+		show_help();
+		exit;
+	}
+	if ( $configfile eq "" ) {
+		show_help();
+		exit;
+	}
+}
+
+sub get_mod_name 
+{
+	my ($line) = @_;
+	$line =~ /^(\w+)/;
+	return ($1);
+}
+
+sub get_modpath_and_name 
+{
+	my ($path) = @_;
+	$path =~ /kernel(\/.*\/)(.*).ko/;
+	return ($1,$2);
+}
+
+parse_args();
+
+our @mod_list = ();
+
+if ( $lsmodfile eq "" ) {
+	# get lsmod command output 
+	open(LSMOD, "lsmod | tail -n+2 |") || die;
+		@mod_list = <LSMOD>;
+	close(LSMOD);
+} else {
+	open(LSMOD, "cat $lsmodfile | tail -n+2 |") || die;
+		@mod_list = <LSMOD>;
+	close(LSMOD);
+}
+
+our @conf_list = ();
+our $cnt = 0;
+our $mod_line = "";
+our $mod_path = "";
+our %conf_array_tmp;
+
+foreach $mod_line (@mod_list){
+	# remove "\n"
+	chop($mod_line);
+	# get module name
+	my $mod_name = &get_mod_name($mod_line);
+	# get module info
+	open(MODINFO, "modinfo -n $mod_name|") || die;
+		$mod_path = <MODINFO>;
+	close(MODINFO);
+
+	(my $mpath, my $mname) = &get_modpath_and_name($mod_path);
+	my $mkfile_path = "$kernelpath/$mpath/Makefile";
+	
+	open(MF, $mkfile_path);
+	while (<MF>) {
+		if( $_ =~ /obj-\$\((\w*)\)\W*\+=\W*$mname.o/ ) {
+			$conf_list[$cnt++] = $1;
+		}
+	}	
+	close(MF);
+}
+
+%conf_array_tmp;
+for ( @conf_list ) {
+	$conf_array_tmp{$_} = 1;
+}
+
+our $data_line = "";
+our @configlist = ();
+
+# read kernel config file
+open(FI, $configfile);
+	@configlist = <FI>;
+	close(FI);
+
+# open convert config file descriptor
+open(FO, "> $outputfile");
+foreach $data_line (@configlist) {
+    if($data_line =~ /\W*(#?)\W*(CONFIG_\w*)\W*=?\W*([my]?)/) {
+		if ($conf_array_tmp{$2} == 1) {
+			print FO "$2=y\n";
+		} else {
+			if ($dmod && $3 eq "m") {
+				print FO "# $2\n"; 
+			} else {			
+				print FO $data_line; 
+			}
+		}
+	} else {
+		# output commnet
+		print FO $data_line;
+	}
+}
+close(FO);
